@@ -4,7 +4,6 @@ const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 
-// Endereços autorizados para acessar a API pelo navegador.
 const origensPermitidas = [
   process.env.FRONTEND_URL,
   "http://localhost:5500",
@@ -17,15 +16,13 @@ const origensPermitidas = [
 app.use(
   cors({
     origin: (origem, callback) => {
-      // Permite chamadas sem Origin, como testes por ferramentas de API.
       if (!origem || origensPermitidas.includes(origem)) {
         return callback(null, true);
       }
 
-      // Origens que não estão na lista não recebem permissão CORS.
       return callback(null, false);
     },
-    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     optionsSuccessStatus: 204,
   })
@@ -64,30 +61,16 @@ function tratarRotaAsync(rota) {
 }
 
 app.param("id", (req, res, next, valor) => {
-  const id = Number(valor);
+  const formatoUuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-  if (!Number.isSafeInteger(id) || id < 1) {
+  if (!formatoUuid.test(valor)) {
     return res.status(400).json({ erro: "O ID da tarefa é inválido." });
   }
 
-  req.idTarefa = id;
+  req.idTarefa = valor;
   next();
 });
-
-function validarDescricao(descricao) {
-  if (descricao === undefined || descricao === null) {
-    return { valida: true, valor: null };
-  }
-
-  if (typeof descricao !== "string") {
-    return { valida: false, valor: null };
-  }
-
-  return {
-    valida: true,
-    valor: descricao.trim() || null,
-  };
-}
 
 app.get("/", (req, res) => {
   res.json({
@@ -103,15 +86,15 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// Lista todas as tarefas.
+// Lista as tarefas.
 app.get(
   "/api/tarefas",
   verificarConfiguracao,
   tratarRotaAsync(async (req, res) => {
     const { data, error } = await supabase
-      .from("tarefas")
+      .from("tasks")
       .select("*")
-      .order("criada_em", { ascending: false });
+      .order("created_at", { ascending: false });
 
     if (error) throw error;
 
@@ -119,13 +102,13 @@ app.get(
   })
 );
 
-// Busca uma tarefa pelo ID.
+// Busca uma tarefa pelo UUID.
 app.get(
   "/api/tarefas/:id",
   verificarConfiguracao,
   tratarRotaAsync(async (req, res) => {
     const { data, error } = await supabase
-      .from("tarefas")
+      .from("tasks")
       .select("*")
       .eq("id", req.idTarefa)
       .maybeSingle();
@@ -140,35 +123,32 @@ app.get(
   })
 );
 
-// Cadastra uma tarefa.
+// Cria uma tarefa.
 app.post(
   "/api/tarefas",
   verificarConfiguracao,
   tratarRotaAsync(async (req, res) => {
     const corpo = req.body || {};
-    const titulo =
-      typeof corpo.titulo === "string" ? corpo.titulo.trim() : "";
+    const title = typeof corpo.title === "string" ? corpo.title.trim() : "";
 
-    if (!titulo) {
-      return res.status(400).json({
-        erro: "Informe um título para a tarefa.",
-      });
+    if (!title) {
+      return res.status(400).json({ erro: "Informe o título da tarefa." });
     }
 
-    const descricao = validarDescricao(corpo.descricao);
-
-    if (!descricao.valida) {
+    if (
+      corpo.completed !== undefined &&
+      typeof corpo.completed !== "boolean"
+    ) {
       return res.status(400).json({
-        erro: "A descrição precisa ser um texto.",
+        erro: "O campo completed precisa ser true ou false.",
       });
     }
 
     const { data, error } = await supabase
-      .from("tarefas")
+      .from("tasks")
       .insert({
-        titulo,
-        descricao: descricao.valor,
-        concluida: false,
+        title,
+        completed: corpo.completed ?? false,
       })
       .select()
       .single();
@@ -179,74 +159,71 @@ app.post(
   })
 );
 
-// Edita o título, a descrição ou o estado de conclusão.
-app.patch(
-  "/api/tarefas/:id",
-  verificarConfiguracao,
-  tratarRotaAsync(async (req, res) => {
-    const corpo = req.body;
+const atualizarTarefa = tratarRotaAsync(async (req, res) => {
+  const corpo = req.body;
 
-    if (!corpo || typeof corpo !== "object" || Array.isArray(corpo)) {
-      return res.status(400).json({ erro: "Envie os dados da tarefa." });
-    }
+  if (!corpo || typeof corpo !== "object" || Array.isArray(corpo)) {
+    return res.status(400).json({ erro: "Envie os dados da tarefa." });
+  }
 
-    const alteracoes = {};
+  const alteracoes = {};
 
-    if (Object.prototype.hasOwnProperty.call(corpo, "titulo")) {
-      if (typeof corpo.titulo !== "string" || !corpo.titulo.trim()) {
-        return res.status(400).json({
-          erro: "O título precisa ser um texto preenchido.",
-        });
-      }
-
-      alteracoes.titulo = corpo.titulo.trim();
-    }
-
-    if (Object.prototype.hasOwnProperty.call(corpo, "descricao")) {
-      const descricao = validarDescricao(corpo.descricao);
-
-      if (!descricao.valida) {
-        return res.status(400).json({
-          erro: "A descrição precisa ser um texto.",
-        });
-      }
-
-      alteracoes.descricao = descricao.valor;
-    }
-
-    if (Object.prototype.hasOwnProperty.call(corpo, "concluida")) {
-      if (typeof corpo.concluida !== "boolean") {
-        return res.status(400).json({
-          erro: "O campo concluida precisa ser true ou false.",
-        });
-      }
-
-      alteracoes.concluida = corpo.concluida;
-    }
-
-    if (Object.keys(alteracoes).length === 0) {
+  if (Object.prototype.hasOwnProperty.call(corpo, "title")) {
+    if (typeof corpo.title !== "string" || !corpo.title.trim()) {
       return res.status(400).json({
-        erro: "Envie pelo menos um campo para alterar.",
+        erro: "O título precisa ser um texto preenchido.",
       });
     }
 
-    alteracoes.atualizada_em = new Date().toISOString();
+    alteracoes.title = corpo.title.trim();
+  }
 
-    const { data, error } = await supabase
-      .from("tarefas")
-      .update(alteracoes)
-      .eq("id", req.idTarefa)
-      .select()
-      .maybeSingle();
-
-    if (error) throw error;
-
-    if (!data) {
-      return res.status(404).json({ erro: "Tarefa não encontrada." });
+  if (Object.prototype.hasOwnProperty.call(corpo, "completed")) {
+    if (typeof corpo.completed !== "boolean") {
+      return res.status(400).json({
+        erro: "O campo completed precisa ser true ou false.",
+      });
     }
 
-    res.json(data);
-  })
+    alteracoes.completed = corpo.completed;
+  }
+
+  if (Object.keys(alteracoes).length === 0) {
+    return res.status(400).json({
+      erro: "Envie title ou completed para alterar a tarefa.",
+    });
+  }
+
+  alteracoes.updated_at = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("tasks")
+    .update(alteracoes)
+    .eq("id", req.idTarefa)
+    .select()
+    .maybeSingle();
+
+  if (error) throw error;
+
+  if (!data) {
+    return res.status(404).json({ erro: "Tarefa não encontrada." });
+  }
+
+  res.json(data);
+});
+
+// PUT atende ao método indicado no resumo da aula.
+// PATCH também é aceito para facilitar atualizações parciais.
+app.put(
+  "/api/tarefas/:id",
+  verificarConfiguracao,
+  atualizarTarefa
+);
+
+app.patch(
+  "/api/tarefas/:id",
+  verificarConfiguracao,
+  atualizarTarefa
 );
 
 // Marca uma tarefa como concluída.
@@ -255,10 +232,10 @@ app.patch(
   verificarConfiguracao,
   tratarRotaAsync(async (req, res) => {
     const { data, error } = await supabase
-      .from("tarefas")
+      .from("tasks")
       .update({
-        concluida: true,
-        atualizada_em: new Date().toISOString(),
+        completed: true,
+        updated_at: new Date().toISOString(),
       })
       .eq("id", req.idTarefa)
       .select()
@@ -280,7 +257,7 @@ app.delete(
   verificarConfiguracao,
   tratarRotaAsync(async (req, res) => {
     const { data, error } = await supabase
-      .from("tarefas")
+      .from("tasks")
       .delete()
       .eq("id", req.idTarefa)
       .select("id")
